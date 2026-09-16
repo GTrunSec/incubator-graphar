@@ -152,10 +152,10 @@ inline bool vertex_builder_contains_property(const graphar::builder::Vertex& v,
   return props.find(name) != props.end();
 }
 
-#define DEF_VERTEX_BUILDER_ADD_PROPERTY_FUNC(type)                             \
-  inline void vertex_builder_add_property_##type(                              \
-      graphar::builder::Vertex& v, const std::string& name, type val) {        \
-    v.AddProperty(name, val);                                                  \
+#define DEF_VERTEX_BUILDER_ADD_PROPERTY_FUNC(type)                      \
+  inline void vertex_builder_add_property_##type(                       \
+      graphar::builder::Vertex& v, const std::string& name, type val) { \
+    v.AddProperty(name, val);                                           \
   }
 
 DEF_VERTEX_BUILDER_ADD_PROPERTY_FUNC(bool)
@@ -170,11 +170,11 @@ inline void vertex_builder_add_property_string(graphar::builder::Vertex& v,
   v.AddProperty(name, val);
 }
 
-#define DEF_VERTEX_BUILDER_ADD_PROPERTY_WITH_CARDINALITY_FUNC(type)            \
-  inline void vertex_builder_add_property_##type##_with_cardinality(           \
-      graphar::builder::Vertex& v, graphar::Cardinality cardinality,           \
-      const std::string& name, type val) {                                     \
-    v.AddProperty(cardinality, name, val);                                     \
+#define DEF_VERTEX_BUILDER_ADD_PROPERTY_WITH_CARDINALITY_FUNC(type)  \
+  inline void vertex_builder_add_property_##type##_with_cardinality( \
+      graphar::builder::Vertex& v, graphar::Cardinality cardinality, \
+      const std::string& name, type val) {                           \
+    v.AddProperty(cardinality, name, val);                           \
   }
 
 DEF_VERTEX_BUILDER_ADD_PROPERTY_WITH_CARDINALITY_FUNC(bool)
@@ -192,10 +192,48 @@ inline void vertex_builder_add_property_string_with_cardinality(
 void add_vertex(graphar::builder::VerticesBuilder& builder,
                 graphar::builder::Vertex& v);
 
-std::unique_ptr<graphar::builder::VerticesBuilder>
-new_vertices_builder(const std::shared_ptr<graphar::VertexInfo>& vertex_info,
-                     const std::string& path_prefix, i64 start_idx);
+std::unique_ptr<graphar::builder::VerticesBuilder> new_vertices_builder(
+    const std::shared_ptr<graphar::VertexInfo>& vertex_info,
+    const std::string& path_prefix, i64 start_idx);
 
 void vertices_dump(graphar::builder::VerticesBuilder& builder);
+
+// `Edge`
+std::unique_ptr<graphar::builder::Edge> new_edge_builder(i64 source,
+                                                         i64 destination);
+i64 edge_builder_source(const graphar::builder::Edge& edge);
+i64 edge_builder_destination(const graphar::builder::Edge& edge);
+bool edge_builder_is_empty(const graphar::builder::Edge& edge);
+bool edge_builder_contains_property(const graphar::builder::Edge& edge,
+                                    const std::string& name);
+
+#define DEF_EDGE_BUILDER_ADD_PROPERTY_FUNC(type)                           \
+  inline void edge_builder_add_property_##type(                            \
+      graphar::builder::Edge& edge, const std::string& name, type value) { \
+    edge.AddProperty(name, value);                                         \
+  }
+
+DEF_EDGE_BUILDER_ADD_PROPERTY_FUNC(bool)
+DEF_EDGE_BUILDER_ADD_PROPERTY_FUNC(i32)
+DEF_EDGE_BUILDER_ADD_PROPERTY_FUNC(i64)
+DEF_EDGE_BUILDER_ADD_PROPERTY_FUNC(f32)
+DEF_EDGE_BUILDER_ADD_PROPERTY_FUNC(f64)
+
+inline void edge_builder_add_property_string(graphar::builder::Edge& edge,
+                                             const std::string& name,
+                                             const std::string& value) {
+  edge.AddProperty(name, value);
+}
+
+// `EdgesBuilder`
+std::unique_ptr<graphar::builder::EdgesBuilder> new_edges_builder(
+    const std::shared_ptr<graphar::EdgeInfo>& edge_info,
+    const std::string& path_prefix, graphar::AdjListType adjacency,
+    i64 num_vertices);
+void add_edge(graphar::builder::EdgesBuilder& builder,
+              graphar::builder::Edge& edge);
+i64 edges_len(const graphar::builder::EdgesBuilder& builder);
+void edges_clear(graphar::builder::EdgesBuilder& builder);
+void edges_dump(graphar::builder::EdgesBuilder& builder);
 
 }  // namespace graphar_rs

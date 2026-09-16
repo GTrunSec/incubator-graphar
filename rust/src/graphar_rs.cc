@@ -300,9 +300,9 @@ void add_vertex(graphar::builder::VerticesBuilder& builder,
   }
 }
 
-std::unique_ptr<graphar::builder::VerticesBuilder>
-new_vertices_builder(const std::shared_ptr<graphar::VertexInfo>& vertex_info,
-                     const std::string& path_prefix, i64 start_idx) {
+std::unique_ptr<graphar::builder::VerticesBuilder> new_vertices_builder(
+    const std::shared_ptr<graphar::VertexInfo>& vertex_info,
+    const std::string& path_prefix, i64 start_idx) {
   if (vertex_info == nullptr) {
     throw std::runtime_error("VerticesBuilder: vertex_info must not be null");
   }
@@ -314,7 +314,74 @@ new_vertices_builder(const std::shared_ptr<graphar::VertexInfo>& vertex_info,
       vertex_info, path_prefix, static_cast<graphar::IdType>(start_idx));
 }
 
-void vertices_dump(graphar::builder::VerticesBuilder &builder) {
+void vertices_dump(graphar::builder::VerticesBuilder& builder) {
+  auto status = builder.Dump();
+  if (!status.ok()) {
+    throw std::runtime_error(status.message());
+  }
+}
+
+// `Edge`
+std::unique_ptr<graphar::builder::Edge> new_edge_builder(i64 source,
+                                                         i64 destination) {
+  if (source < 0 || destination < 0) {
+    throw std::runtime_error("Edge: vertex IDs must be >= 0");
+  }
+  return std::make_unique<graphar::builder::Edge>(source, destination);
+}
+
+i64 edge_builder_source(const graphar::builder::Edge& edge) {
+  return edge.GetSource();
+}
+
+i64 edge_builder_destination(const graphar::builder::Edge& edge) {
+  return edge.GetDestination();
+}
+
+bool edge_builder_is_empty(const graphar::builder::Edge& edge) {
+  return edge.Empty();
+}
+
+bool edge_builder_contains_property(const graphar::builder::Edge& edge,
+                                    const std::string& name) {
+  return edge.ContainProperty(name);
+}
+
+// `EdgesBuilder`
+std::unique_ptr<graphar::builder::EdgesBuilder> new_edges_builder(
+    const std::shared_ptr<graphar::EdgeInfo>& edge_info,
+    const std::string& path_prefix, graphar::AdjListType adjacency,
+    i64 num_vertices) {
+  if (edge_info == nullptr) {
+    throw std::runtime_error("EdgesBuilder: edge_info must not be null");
+  }
+  if (!edge_info->HasAdjacentListType(adjacency)) {
+    throw std::runtime_error(
+        "EdgesBuilder: adjacency list type is absent from edge_info");
+  }
+  if (num_vertices < 0) {
+    throw std::runtime_error("EdgesBuilder: num_vertices must be >= 0");
+  }
+  return std::make_unique<graphar::builder::EdgesBuilder>(
+      edge_info, path_prefix, adjacency, num_vertices, nullptr,
+      graphar::ValidateLevel::strong_validate);
+}
+
+void add_edge(graphar::builder::EdgesBuilder& builder,
+              graphar::builder::Edge& edge) {
+  auto status = builder.AddEdge(edge);
+  if (!status.ok()) {
+    throw std::runtime_error(status.message());
+  }
+}
+
+i64 edges_len(const graphar::builder::EdgesBuilder& builder) {
+  return builder.GetNum();
+}
+
+void edges_clear(graphar::builder::EdgesBuilder& builder) { builder.Clear(); }
+
+void edges_dump(graphar::builder::EdgesBuilder& builder) {
   auto status = builder.Dump();
   if (!status.ok()) {
     throw std::runtime_error(status.message());

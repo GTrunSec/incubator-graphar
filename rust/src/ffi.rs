@@ -567,6 +567,66 @@ pub(crate) mod graphar {
         #[namespace = "graphar_rs"]
         fn vertices_dump(builder: Pin<&mut VerticesBuilder>) -> Result<()>;
     }
+
+    // `builder::Edge`
+    #[namespace = "graphar::builder"]
+    unsafe extern "C++" {
+        #[rust_name = "BuilderEdge"]
+        type Edge;
+
+        #[namespace = "graphar_rs"]
+        fn new_edge_builder(source: i64, destination: i64) -> Result<UniquePtr<BuilderEdge>>;
+        #[namespace = "graphar_rs"]
+        fn edge_builder_source(edge: &BuilderEdge) -> i64;
+        #[namespace = "graphar_rs"]
+        fn edge_builder_destination(edge: &BuilderEdge) -> i64;
+        #[namespace = "graphar_rs"]
+        fn edge_builder_is_empty(edge: &BuilderEdge) -> bool;
+        #[namespace = "graphar_rs"]
+        fn edge_builder_contains_property(edge: &BuilderEdge, name: &CxxString) -> bool;
+        #[namespace = "graphar_rs"]
+        fn edge_builder_add_property_bool(
+            edge: Pin<&mut BuilderEdge>,
+            name: &CxxString,
+            value: bool,
+        );
+        #[namespace = "graphar_rs"]
+        fn edge_builder_add_property_i32(edge: Pin<&mut BuilderEdge>, name: &CxxString, value: i32);
+        #[namespace = "graphar_rs"]
+        fn edge_builder_add_property_i64(edge: Pin<&mut BuilderEdge>, name: &CxxString, value: i64);
+        #[namespace = "graphar_rs"]
+        fn edge_builder_add_property_f32(edge: Pin<&mut BuilderEdge>, name: &CxxString, value: f32);
+        #[namespace = "graphar_rs"]
+        fn edge_builder_add_property_f64(edge: Pin<&mut BuilderEdge>, name: &CxxString, value: f64);
+        #[namespace = "graphar_rs"]
+        fn edge_builder_add_property_string(
+            edge: Pin<&mut BuilderEdge>,
+            name: &CxxString,
+            value: &CxxString,
+        );
+    }
+
+    // `builder::EdgesBuilder`
+    #[namespace = "graphar::builder"]
+    unsafe extern "C++" {
+        type EdgesBuilder;
+
+        #[namespace = "graphar_rs"]
+        fn new_edges_builder(
+            edge_info: &SharedPtr<EdgeInfo>,
+            path_prefix: &CxxString,
+            adjacency: AdjListType,
+            num_vertices: i64,
+        ) -> Result<UniquePtr<EdgesBuilder>>;
+        #[namespace = "graphar_rs"]
+        fn add_edge(builder: Pin<&mut EdgesBuilder>, edge: Pin<&mut BuilderEdge>) -> Result<()>;
+        #[namespace = "graphar_rs"]
+        fn edges_len(builder: &EdgesBuilder) -> i64;
+        #[namespace = "graphar_rs"]
+        fn edges_clear(builder: Pin<&mut EdgesBuilder>);
+        #[namespace = "graphar_rs"]
+        fn edges_dump(builder: Pin<&mut EdgesBuilder>) -> Result<()>;
+    }
 }
 
 impl From<MaybeIndex> for Option<usize> {
