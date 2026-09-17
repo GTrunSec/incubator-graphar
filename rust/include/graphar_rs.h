@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include "graphar/api/high_level_reader.h"
 #include "graphar/api/high_level_writer.h"
 #include "graphar/api/info.h"
 #include "rust/cxx.h"
@@ -36,6 +37,8 @@ using f64 = double;
 
 namespace graphar {
 struct MaybeIndex;
+struct VertexStringRecord;
+struct EdgeStringRecord;
 
 using SharedVertexInfo = std::shared_ptr<VertexInfo>;
 using SharedEdgeInfo = std::shared_ptr<EdgeInfo>;
@@ -132,6 +135,16 @@ void graph_info_save(const graphar::GraphInfo& graph_info,
                      const std::string& path);
 std::unique_ptr<std::string> graph_info_dump(
     const graphar::GraphInfo& graph_info);
+
+rust::Vec<graphar::VertexStringRecord> read_vertex_string_records(
+    const std::shared_ptr<graphar::GraphInfo>& graph_info,
+    const std::string& type, const rust::Vec<rust::String>& properties,
+    size_t max_rows);
+rust::Vec<graphar::EdgeStringRecord> read_edge_string_records(
+    const std::shared_ptr<graphar::GraphInfo>& graph_info,
+    const std::string& src_type, const std::string& edge_type,
+    const std::string& dst_type, graphar::AdjListType adjacency,
+    const rust::Vec<rust::String>& properties, size_t max_rows);
 
 // =========================== Builder ===========================
 // `Vertex`

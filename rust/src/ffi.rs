@@ -373,6 +373,19 @@ pub(crate) mod graphar {
         index: usize,
     }
 
+    struct VertexStringRecord {
+        id: i64,
+        values: Vec<String>,
+        valid: Vec<bool>,
+    }
+
+    struct EdgeStringRecord {
+        source: i64,
+        destination: i64,
+        values: Vec<String>,
+        valid: Vec<bool>,
+    }
+
     // `GraphInfo`
     unsafe extern "C++" {
         type GraphInfo;
@@ -417,6 +430,23 @@ pub(crate) mod graphar {
             edge_type: &CxxString,
             dst_type: &CxxString,
         ) -> MaybeIndex;
+        #[namespace = "graphar_rs"]
+        fn read_vertex_string_records(
+            graph_info: &SharedPtr<GraphInfo>,
+            type_: &CxxString,
+            properties: &Vec<String>,
+            max_rows: usize,
+        ) -> Result<Vec<VertexStringRecord>>;
+        #[namespace = "graphar_rs"]
+        fn read_edge_string_records(
+            graph_info: &SharedPtr<GraphInfo>,
+            src_type: &CxxString,
+            edge_type: &CxxString,
+            dst_type: &CxxString,
+            adjacency: AdjListType,
+            properties: &Vec<String>,
+            max_rows: usize,
+        ) -> Result<Vec<EdgeStringRecord>>;
     }
 
     unsafe extern "C++" {

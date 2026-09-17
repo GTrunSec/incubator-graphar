@@ -31,6 +31,8 @@ pub mod error;
 pub mod info;
 /// GraphAr property.
 pub mod property;
+/// High-level GraphAr readers.
+pub mod reader;
 /// GraphAr logical data types.
 pub mod types;
 

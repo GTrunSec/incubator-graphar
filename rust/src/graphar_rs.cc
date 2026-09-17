@@ -194,6 +194,112 @@ std::shared_ptr<graphar::GraphInfo> create_graph_info(
   return graph_info;
 }
 
+namespace {
+std::vector<std::string> to_std_strings(
+    const rust::Vec<rust::String>& strings) {
+  std::vector<std::string> values;
+  values.reserve(strings.size());
+  for (const auto& value : strings) {
+    values.emplace_back(std::string(value));
+  }
+  return values;
+}
+
+void enforce_row_budget(size_t rows, size_t max_rows,
+                        const char* collection_name) {
+  if (rows > max_rows) {
+    throw std::runtime_error(
+        std::string(collection_name) + " contains " + std::to_string(rows) +
+        " rows, exceeding max_rows=" + std::to_string(max_rows));
+  }
+}
+}  // namespace
+
+rust::Vec<graphar::VertexStringRecord> read_vertex_string_records(
+    const std::shared_ptr<graphar::GraphInfo>& graph_info,
+    const std::string& type, const rust::Vec<rust::String>& properties,
+    size_t max_rows) {
+  if (graph_info == nullptr) {
+    throw std::runtime_error("VerticesCollection: graph_info must not be null");
+  }
+  auto collection_result = graphar::VerticesCollection::Make(graph_info, type);
+  if (!collection_result) {
+    throw std::runtime_error(collection_result.error().message());
+  }
+  auto collection = std::move(collection_result).value();
+  enforce_row_budget(collection->size(), max_rows, "VerticesCollection");
+
+  const auto names = to_std_strings(properties);
+  rust::Vec<graphar::VertexStringRecord> records;
+  records.reserve(collection->size());
+  for (auto iter = collection->begin(); iter != collection->end(); ++iter) {
+    auto vertex = *iter;
+    graphar::VertexStringRecord record;
+    record.id = vertex.id();
+    record.values.reserve(names.size());
+    record.valid.reserve(names.size());
+    for (const auto& name : names) {
+      const bool valid = vertex.IsValid(name);
+      record.valid.push_back(valid);
+      if (valid) {
+        auto value = vertex.property<std::string>(name);
+        if (!value) {
+          throw std::runtime_error(value.error().message());
+        }
+        record.values.push_back(std::move(value).value());
+      } else {
+        record.values.push_back("");
+      }
+    }
+    records.push_back(std::move(record));
+  }
+  return records;
+}
+
+rust::Vec<graphar::EdgeStringRecord> read_edge_string_records(
+    const std::shared_ptr<graphar::GraphInfo>& graph_info,
+    const std::string& src_type, const std::string& edge_type,
+    const std::string& dst_type, graphar::AdjListType adjacency,
+    const rust::Vec<rust::String>& properties, size_t max_rows) {
+  if (graph_info == nullptr) {
+    throw std::runtime_error("EdgesCollection: graph_info must not be null");
+  }
+  auto collection_result = graphar::EdgesCollection::Make(
+      graph_info, src_type, edge_type, dst_type, adjacency);
+  if (!collection_result) {
+    throw std::runtime_error(collection_result.error().message());
+  }
+  auto collection = std::move(collection_result).value();
+  enforce_row_budget(collection->size(), max_rows, "EdgesCollection");
+
+  const auto names = to_std_strings(properties);
+  rust::Vec<graphar::EdgeStringRecord> records;
+  records.reserve(collection->size());
+  for (auto iter = collection->begin(); iter != collection->end(); ++iter) {
+    auto edge = *iter;
+    graphar::EdgeStringRecord record;
+    record.source = edge.source();
+    record.destination = edge.destination();
+    record.values.reserve(names.size());
+    record.valid.reserve(names.size());
+    for (const auto& name : names) {
+      const bool valid = edge.IsValid(name);
+      record.valid.push_back(valid);
+      if (valid) {
+        auto value = edge.property<std::string>(name);
+        if (!value) {
+          throw std::runtime_error(value.error().message());
+        }
+        record.values.push_back(std::move(value).value());
+      } else {
+        record.values.push_back("");
+      }
+    }
+    records.push_back(std::move(record));
+  }
+  return records;
+}
+
 static graphar::MaybeIndex optional_to_maybe_index(std::optional<size_t> opt) {
   if (opt) {
     return graphar::MaybeIndex{true, *opt};
