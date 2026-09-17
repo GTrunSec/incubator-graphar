@@ -232,7 +232,8 @@ rust::Vec<graphar::VertexStringRecord> read_vertex_string_records(
   const auto names = to_std_strings(properties);
   rust::Vec<graphar::VertexStringRecord> records;
   records.reserve(collection->size());
-  for (auto iter = collection->begin(); iter != collection->end(); ++iter) {
+  const auto end = collection->end();
+  for (auto iter = collection->begin(); iter != end; ++iter) {
     auto vertex = *iter;
     graphar::VertexStringRecord record;
     record.id = vertex.id();
@@ -275,7 +276,8 @@ rust::Vec<graphar::EdgeStringRecord> read_edge_string_records(
   const auto names = to_std_strings(properties);
   rust::Vec<graphar::EdgeStringRecord> records;
   records.reserve(collection->size());
-  for (auto iter = collection->begin(); iter != collection->end(); ++iter) {
+  const auto end = collection->end();
+  for (auto iter = collection->begin(); iter != end; ++iter) {
     auto edge = *iter;
     graphar::EdgeStringRecord record;
     record.source = edge.source();
