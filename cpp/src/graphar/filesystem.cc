@@ -28,6 +28,7 @@
 #include "arrow/api.h"
 #include "arrow/csv/api.h"
 #include "arrow/dataset/api.h"
+#include "arrow/dataset/file_csv.h"
 #include "arrow/dataset/plan.h"
 #include "parquet/arrow/reader.h"
 #if defined(ARROW_VERSION) && ARROW_VERSION <= 12000000
@@ -119,8 +120,14 @@ Status EnsureDatasetScannerInitialized() {
 std::shared_ptr<ds::FileFormat> FileSystem::GetFileFormat(
     const FileType type) const {
   switch (type) {
-  case FileType::CSV:
-    return std::make_shared<ds::CsvFileFormat>();
+  case FileType::CSV: {
+    auto scan_options = std::make_shared<ds::CsvFragmentScanOptions>();
+    scan_options->convert_options.strings_can_be_null = true;
+    scan_options->convert_options.quoted_strings_can_be_null = false;
+    auto format = std::make_shared<ds::CsvFileFormat>();
+    format->default_fragment_scan_options = std::move(scan_options);
+    return format;
+  }
   case FileType::PARQUET:
     return std::make_shared<ds::ParquetFileFormat>();
   case FileType::JSON:

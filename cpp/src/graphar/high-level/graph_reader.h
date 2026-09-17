@@ -621,7 +621,7 @@ class EdgeIter {
         reader.next_chunk();
       }
     }
-    if (st.IsKeyError()) {
+    if (st.IsKeyError() || st.IsIndexError()) {
       st = adj_list_reader_.next_chunk();
       ++global_chunk_index_;
       ++vertex_chunk_index_;

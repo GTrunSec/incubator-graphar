@@ -225,6 +225,10 @@ mod tests {
         let mut second = Vertex::new();
         second.add_property_string("key", "entity-1");
         vertices.add_vertex(second).unwrap();
+        let mut third = Vertex::new();
+        third.add_property_string("key", "entity-2");
+        third.add_property_string("note", "");
+        vertices.add_vertex(third).unwrap();
         vertices.dump().unwrap();
 
         let mut edges =
@@ -236,8 +240,8 @@ mod tests {
         edges.dump().unwrap();
 
         let properties = vec!["key".to_string(), "note".to_string()];
-        let read_vertices = read_vertex_strings(&graph_info, "entity", &properties, 2).unwrap();
-        assert_eq!(read_vertices.len(), 2);
+        let read_vertices = read_vertex_strings(&graph_info, "entity", &properties, 3).unwrap();
+        assert_eq!(read_vertices.len(), 3);
         assert_eq!(read_vertices[0].id(), 0);
         assert_eq!(
             read_vertices[0].values(),
@@ -246,6 +250,10 @@ mod tests {
         assert_eq!(
             read_vertices[1].values(),
             &[Some("entity-1".to_string()), None]
+        );
+        assert_eq!(
+            read_vertices[2].values(),
+            &[Some("entity-2".to_string()), Some(String::new())]
         );
 
         let read_edges = read_edge_strings(
@@ -270,5 +278,55 @@ mod tests {
 
         let error = read_vertex_strings(&graph_info, "entity", &properties, 1).unwrap_err();
         assert!(error.to_string().contains("exceeding max_rows=1"));
+    }
+
+    #[test]
+    fn edge_iteration_crosses_exact_chunk_boundaries() {
+        let directory = tempdir().unwrap();
+        let prefix = format!("{}/", directory.path().display());
+        let edge_info = EdgeInfo::builder("entity", "relates", "entity", 4, 4, 4)
+            .directed(true)
+            .push_adjacent_list(AdjacentList::new(
+                AdjListType::UnorderedBySource,
+                FileType::Csv,
+                Some("unordered_by_source/"),
+            ))
+            .property_groups(string_properties())
+            .prefix("edge/entity_relates_entity/")
+            .try_build()
+            .unwrap();
+        let graph_info = GraphInfo::try_new(
+            "exact-boundary",
+            vec![],
+            vec![edge_info.clone()],
+            vec![],
+            &prefix,
+            None,
+        )
+        .unwrap();
+        let mut edges =
+            EdgesBuilder::try_new(&edge_info, &prefix, AdjListType::UnorderedBySource, 8).unwrap();
+        for source in 0..8 {
+            let mut edge = Edge::new(source, (source + 1) % 8);
+            edge.add_property_string("key", format!("edge-{source}"));
+            edges.add_edge(edge).unwrap();
+        }
+        edges.dump().unwrap();
+
+        let read_edges = read_edge_strings(
+            &graph_info,
+            "entity",
+            "relates",
+            "entity",
+            AdjListType::UnorderedBySource,
+            &["key".to_string()],
+            8,
+        )
+        .unwrap();
+
+        assert_eq!(read_edges.len(), 8);
+        assert_eq!(read_edges[0].source(), 0);
+        assert_eq!(read_edges[4].source(), 4);
+        assert_eq!(read_edges[7].source(), 7);
     }
 }

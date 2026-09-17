@@ -17,8 +17,30 @@
 
 // Portions adapted from `https://github.com/kuzudb/kuzu/blob/master/tools/rust_api/build.rs` (MIT License).
 
-use std::env;
 use std::path::{Path, PathBuf};
+use std::{env, fs};
+
+fn track_cpp_sources(root: &Path) {
+    let mut entries = fs::read_dir(root)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", root.display()))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|error| panic!("failed to enumerate {}: {error}", root.display()));
+    entries.sort_unstable_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            track_cpp_sources(&path);
+        } else if matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("cc" | "cmake" | "h" | "hpp")
+        ) || path
+            .file_name()
+            .is_some_and(|name| name == "CMakeLists.txt")
+        {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+}
 
 fn link_libraries() -> Vec<PathBuf> {
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
@@ -90,7 +112,7 @@ fn build_graphar() -> Vec<PathBuf> {
 
     println!("cargo:rerun-if-changed=include/graphar_rs.h");
     println!("cargo:rerun-if-changed=src/graphar_rs.cc");
-    println!("cargo:rerun-if-changed=../cpp");
+    track_cpp_sources(&root);
 
     // Include `cpp/src` and `thirdparty`
     vec![root.join("src/"), root.join("thirdparty/")]
