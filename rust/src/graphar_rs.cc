@@ -19,10 +19,14 @@
 
 #include "graphar-rs/src/ffi.rs.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <optional>
 #include <stdexcept>
 #include <utility>
+
+#include "arrow/api.h"
+#include "graphar/api/arrow_reader.h"
 
 namespace graphar_rs {
 rust::String to_type_name(const graphar::DataType& type) {
@@ -213,6 +217,81 @@ void enforce_row_budget(size_t rows, size_t max_rows,
         " rows, exceeding max_rows=" + std::to_string(max_rows));
   }
 }
+
+template <typename T>
+T value_or_throw(graphar::Result<T> result) {
+  if (!result) {
+    throw std::runtime_error(result.error().message());
+  }
+  return std::move(result).value();
+}
+
+void status_or_throw(const graphar::Status& status) {
+  if (!status.ok()) {
+    throw std::runtime_error(status.message());
+  }
+}
+
+std::pair<std::shared_ptr<arrow::Array>, int64_t> locate_array_value(
+    const std::shared_ptr<arrow::ChunkedArray>& column, int64_t row) {
+  for (const auto& chunk : column->chunks()) {
+    if (row < chunk->length()) {
+      return {chunk, row};
+    }
+    row -= chunk->length();
+  }
+  throw std::runtime_error("Arrow row is outside the selected column");
+}
+
+std::string read_string_value(
+    const std::shared_ptr<arrow::ChunkedArray>& column, int64_t row,
+    bool& valid) {  // NOLINT(runtime/references)
+  auto [array, local_row] = locate_array_value(column, row);
+  valid = !array->IsNull(local_row);
+  if (!valid) {
+    return {};
+  }
+  if (array->type_id() == arrow::Type::STRING) {
+    return std::dynamic_pointer_cast<arrow::StringArray>(array)->GetString(
+        local_row);
+  }
+  if (array->type_id() == arrow::Type::LARGE_STRING) {
+    return std::dynamic_pointer_cast<arrow::LargeStringArray>(array)->GetString(
+        local_row);
+  }
+  throw std::runtime_error("Requested GraphAr property is not UTF-8");
+}
+
+int64_t read_int64_value(const std::shared_ptr<arrow::ChunkedArray>& column,
+                         int64_t row) {
+  auto [array, local_row] = locate_array_value(column, row);
+  if (array->IsNull(local_row) || array->type_id() != arrow::Type::INT64) {
+    throw std::runtime_error("GraphAr adjacency endpoint is not a valid int64");
+  }
+  return std::dynamic_pointer_cast<arrow::Int64Array>(array)->Value(local_row);
+}
+
+std::vector<std::shared_ptr<arrow::ChunkedArray>> select_columns(
+    const std::vector<std::shared_ptr<arrow::Table>>& tables,
+    const std::vector<std::string>& names) {
+  std::vector<std::shared_ptr<arrow::ChunkedArray>> columns;
+  columns.reserve(names.size());
+  for (const auto& name : names) {
+    std::shared_ptr<arrow::ChunkedArray> column;
+    for (const auto& table : tables) {
+      column = table->GetColumnByName(name);
+      if (column != nullptr) {
+        break;
+      }
+    }
+    if (column == nullptr) {
+      throw std::runtime_error("Property with name " + name +
+                               " does not exist in the selected chunks");
+    }
+    columns.push_back(std::move(column));
+  }
+  return columns;
+}
 }  // namespace
 
 rust::Vec<graphar::VertexStringRecord> read_vertex_string_records(
@@ -230,29 +309,54 @@ rust::Vec<graphar::VertexStringRecord> read_vertex_string_records(
   enforce_row_budget(collection->size(), max_rows, "VerticesCollection");
 
   const auto names = to_std_strings(properties);
-  rust::Vec<graphar::VertexStringRecord> records;
-  records.reserve(collection->size());
-  const auto end = collection->end();
-  for (auto iter = collection->begin(); iter != end; ++iter) {
-    auto vertex = *iter;
-    graphar::VertexStringRecord record;
-    record.id = vertex.id();
-    record.values.reserve(names.size());
-    record.valid.reserve(names.size());
-    for (const auto& name : names) {
-      const bool valid = vertex.IsValid(name);
-      record.valid.push_back(valid);
-      if (valid) {
-        auto value = vertex.property<std::string>(name);
-        if (!value) {
-          throw std::runtime_error(value.error().message());
-        }
-        record.values.push_back(std::move(value).value());
-      } else {
-        record.values.push_back("");
+  auto vertex_info = graph_info->GetVertexInfo(type);
+  std::vector<graphar::VertexPropertyArrowChunkReader> readers;
+  std::vector<graphar::GetChunkVersion> reader_versions;
+  readers.reserve(vertex_info->GetPropertyGroups().size());
+  reader_versions.reserve(vertex_info->GetPropertyGroups().size());
+  for (const auto& property_group : vertex_info->GetPropertyGroups()) {
+    std::vector<std::string> selected;
+    for (const auto& property : property_group->GetProperties()) {
+      if (std::find(names.begin(), names.end(), property.name) != names.end()) {
+        selected.push_back(property.name);
       }
     }
-    records.push_back(std::move(record));
+    if (!selected.empty()) {
+      readers.emplace_back(vertex_info, property_group, selected,
+                           graph_info->GetPrefix());
+      reader_versions.push_back(
+          property_group->GetFileType() == graphar::FileType::PARQUET
+              ? graphar::GetChunkVersion::V2
+              : graphar::GetChunkVersion::V1);
+    }
+  }
+  rust::Vec<graphar::VertexStringRecord> records;
+  records.reserve(collection->size());
+  const auto vertex_count = static_cast<int64_t>(collection->size());
+  const auto chunk_size = vertex_info->GetChunkSize();
+  for (int64_t chunk_start = 0; chunk_start < vertex_count;
+       chunk_start += chunk_size) {
+    std::vector<std::shared_ptr<arrow::Table>> tables;
+    tables.reserve(readers.size());
+    for (size_t index = 0; index < readers.size(); ++index) {
+      status_or_throw(readers[index].seek(chunk_start));
+      tables.push_back(
+          value_or_throw(readers[index].GetChunk(reader_versions[index])));
+    }
+    const auto columns = select_columns(tables, names);
+    const auto rows = std::min(chunk_size, vertex_count - chunk_start);
+    for (int64_t row = 0; row < rows; ++row) {
+      graphar::VertexStringRecord record;
+      record.id = chunk_start + row;
+      record.values.reserve(names.size());
+      record.valid.reserve(names.size());
+      for (const auto& column : columns) {
+        bool valid = false;
+        record.values.push_back(read_string_value(column, row, valid));
+        record.valid.push_back(valid);
+      }
+      records.push_back(std::move(record));
+    }
   }
   return records;
 }
@@ -274,30 +378,60 @@ rust::Vec<graphar::EdgeStringRecord> read_edge_string_records(
   enforce_row_budget(collection->size(), max_rows, "EdgesCollection");
 
   const auto names = to_std_strings(properties);
+  auto edge_info = graph_info->GetEdgeInfo(src_type, edge_type, dst_type);
+  graphar::AdjListArrowChunkReader adjacency_reader(
+      edge_info, adjacency, graph_info->GetPrefix());
+  std::vector<graphar::AdjListPropertyArrowChunkReader> property_readers;
+  property_readers.reserve(edge_info->GetPropertyGroups().size());
+  for (const auto& property_group : edge_info->GetPropertyGroups()) {
+    if (std::any_of(property_group->GetProperties().begin(),
+                    property_group->GetProperties().end(),
+                    [&names](const auto& property) {
+                      return std::find(names.begin(), names.end(),
+                                       property.name) != names.end();
+                    })) {
+      property_readers.emplace_back(edge_info, property_group, adjacency,
+                                    graph_info->GetPrefix());
+    }
+  }
   rust::Vec<graphar::EdgeStringRecord> records;
   records.reserve(collection->size());
-  const auto end = collection->end();
-  for (auto iter = collection->begin(); iter != end; ++iter) {
-    auto edge = *iter;
-    graphar::EdgeStringRecord record;
-    record.source = edge.source();
-    record.destination = edge.destination();
-    record.values.reserve(names.size());
-    record.valid.reserve(names.size());
-    for (const auto& name : names) {
-      const bool valid = edge.IsValid(name);
-      record.valid.push_back(valid);
-      if (valid) {
-        auto value = edge.property<std::string>(name);
-        if (!value) {
-          throw std::runtime_error(value.error().message());
-        }
-        record.values.push_back(std::move(value).value());
-      } else {
-        record.values.push_back("");
+  while (records.size() < collection->size()) {
+    auto adjacency_table = value_or_throw(adjacency_reader.GetChunk());
+    if (adjacency_table == nullptr) {
+      status_or_throw(adjacency_reader.next_chunk());
+      for (auto& reader : property_readers) {
+        status_or_throw(reader.next_chunk());
+      }
+      continue;
+    }
+    std::vector<std::shared_ptr<arrow::Table>> property_tables;
+    property_tables.reserve(property_readers.size());
+    for (auto& reader : property_readers) {
+      property_tables.push_back(value_or_throw(reader.GetChunk()));
+    }
+    const auto columns = select_columns(property_tables, names);
+    const auto sources = adjacency_table->column(0);
+    const auto destinations = adjacency_table->column(1);
+    for (int64_t row = 0; row < adjacency_table->num_rows(); ++row) {
+      graphar::EdgeStringRecord record;
+      record.source = read_int64_value(sources, row);
+      record.destination = read_int64_value(destinations, row);
+      record.values.reserve(names.size());
+      record.valid.reserve(names.size());
+      for (const auto& column : columns) {
+        bool valid = false;
+        record.values.push_back(read_string_value(column, row, valid));
+        record.valid.push_back(valid);
+      }
+      records.push_back(std::move(record));
+    }
+    if (records.size() < collection->size()) {
+      status_or_throw(adjacency_reader.next_chunk());
+      for (auto& reader : property_readers) {
+        status_or_throw(reader.next_chunk());
       }
     }
-    records.push_back(std::move(record));
   }
   return records;
 }

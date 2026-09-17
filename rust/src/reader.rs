@@ -167,15 +167,16 @@ mod tests {
     }
 
     fn string_properties() -> PropertyGroupVector {
-        let mut properties = PropertyVec::new();
-        properties.push(Property::new(
+        let mut key = PropertyVec::new();
+        key.push(Property::new(
             "key",
             DataType::string(),
             true,
             false,
             Cardinality::Single,
         ));
-        properties.push(Property::new(
+        let mut note = PropertyVec::new();
+        note.push(Property::new(
             "note",
             DataType::string(),
             false,
@@ -183,7 +184,8 @@ mod tests {
             Cardinality::Single,
         ));
         let mut groups = PropertyGroupVector::new();
-        groups.push(PropertyGroup::new(properties, FileType::Csv, "property/"));
+        groups.push(PropertyGroup::new(key, FileType::Csv, "key/"));
+        groups.push(PropertyGroup::new(note, FileType::Csv, "note/"));
         groups
     }
 
