@@ -86,7 +86,8 @@ pub fn read_vertex_strings<S: AsRef<str>>(
     max_rows: usize,
 ) -> crate::Result<Vec<VertexStringRecord>> {
     let_cxx_string!(vertex_type = vertex_type.as_ref());
-    ffi::graphar::read_vertex_string_records(&graph_info.0, &vertex_type, properties, max_rows)
+    let properties = properties.to_vec();
+    ffi::graphar::read_vertex_string_records(&graph_info.0, &vertex_type, &properties, max_rows)
         .map(|records| {
             records
                 .into_iter()
@@ -122,13 +123,14 @@ where
     let_cxx_string!(src_type = src_type.as_ref());
     let_cxx_string!(edge_type = edge_type.as_ref());
     let_cxx_string!(dst_type = dst_type.as_ref());
+    let properties = properties.to_vec();
     ffi::graphar::read_edge_string_records(
         &graph_info.0,
         &src_type,
         &edge_type,
         &dst_type,
         adjacency,
-        properties,
+        &properties,
         max_rows,
     )
     .map(|records| {
