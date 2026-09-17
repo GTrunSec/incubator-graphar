@@ -82,16 +82,25 @@ fn build_graphar() -> Vec<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("cpp");
     let mut build = cmake::Config::new(&root);
 
-    // 1. Check if `GRAPHAR_BUILD_TYPE` is set. The value must be `Release`, `Debug` or `RelWithDebInfo`
-    // 2. If not, fallback to `PROFILE` which is set by `cargo`
-    let cmake_build_type =
-        env::var("GRAPHAR_BUILD_TYPE").unwrap_or_else(|_| match env::var("PROFILE").as_deref() {
-            Ok("release") => "Release".to_string(),
-            _ => "Debug".to_string(),
-        });
+    // 1. Check if `GRAPHAR_BUILD_TYPE` is set. The value must be `Release`,
+    //    `Debug` or `RelWithDebInfo`.
+    // 2. Otherwise preserve Cargo's optimization contract. Custom profiles
+    //    (including an optimized test profile) still report `PROFILE=debug`,
+    //    so `PROFILE` alone would silently compile the C++ data path without
+    //    optimization.
+    let cmake_build_type = env::var("GRAPHAR_BUILD_TYPE").unwrap_or_else(|_| {
+        if env::var("PROFILE").as_deref() == Ok("release") {
+            "Release".to_string()
+        } else if env::var("OPT_LEVEL").as_deref() == Ok("0") {
+            "Debug".to_string()
+        } else {
+            "RelWithDebInfo".to_string()
+        }
+    });
 
     println!("cargo:rerun-if-env-changed=GRAPHAR_BUILD_TYPE");
     println!("cargo:rerun-if-env-changed=PROFILE");
+    println!("cargo:rerun-if-env-changed=OPT_LEVEL");
 
     build
         .no_build_target(true)
