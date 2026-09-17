@@ -37,8 +37,8 @@ using f64 = double;
 
 namespace graphar {
 struct MaybeIndex;
-struct VertexStringRecord;
-struct EdgeStringRecord;
+struct VertexStringBatch;
+struct EdgeStringBatch;
 
 using SharedVertexInfo = std::shared_ptr<VertexInfo>;
 using SharedEdgeInfo = std::shared_ptr<EdgeInfo>;
@@ -136,15 +136,26 @@ void graph_info_save(const graphar::GraphInfo& graph_info,
 std::unique_ptr<std::string> graph_info_dump(
     const graphar::GraphInfo& graph_info);
 
-rust::Vec<graphar::VertexStringRecord> read_vertex_string_records(
+graphar::VertexStringBatch read_vertex_string_batch(
     const std::shared_ptr<graphar::GraphInfo>& graph_info,
     const std::string& type, const rust::Vec<rust::String>& properties,
     size_t max_rows);
-rust::Vec<graphar::EdgeStringRecord> read_edge_string_records(
+graphar::EdgeStringBatch read_edge_string_batch(
     const std::shared_ptr<graphar::GraphInfo>& graph_info,
     const std::string& src_type, const std::string& edge_type,
     const std::string& dst_type, graphar::AdjListType adjacency,
     const rust::Vec<rust::String>& properties, size_t max_rows);
+size_t scan_edge_arrow_chunks(
+    const std::shared_ptr<graphar::GraphInfo>& graph_info,
+    const std::string& src_type, const std::string& edge_type,
+    const std::string& dst_type, graphar::AdjListType adjacency,
+    const rust::Vec<rust::String>& properties, size_t max_rows);
+void export_edge_arrow_stream(
+    const std::shared_ptr<graphar::GraphInfo>& graph_info,
+    const std::string& src_type, const std::string& edge_type,
+    const std::string& dst_type, graphar::AdjListType adjacency,
+    const rust::Vec<rust::String>& properties, size_t max_rows,
+    size_t stream_address);
 
 // =========================== Builder ===========================
 // `Vertex`

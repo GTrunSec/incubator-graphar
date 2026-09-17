@@ -23,6 +23,7 @@ license = "Apache-2.0"
 
 [dependencies]
 # anyhow = "1.0.100"
+arrow-array = { version = "58.4.0", features = ["ffi"] }
 cxx = "1.0.190"
 pastey = "0.2.1"
 

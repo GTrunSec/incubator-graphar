@@ -17,6 +17,7 @@
 
 //! Bounded high-level readers backed by GraphAr collections.
 
+use arrow_array::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
 use cxx::let_cxx_string;
 
 use crate::{ffi, info::AdjListType, info::GraphInfo};
@@ -48,6 +49,125 @@ pub struct EdgeStringRecord {
     values: Vec<Option<String>>,
 }
 
+/// Columnar vertex strings transferred with one allocation per field vector.
+#[derive(Debug)]
+pub struct VertexStringBatch {
+    ids: Vec<i64>,
+    values: Vec<String>,
+    valid: Vec<bool>,
+    column_count: usize,
+}
+
+impl VertexStringBatch {
+    /// Number of vertex rows in the batch.
+    pub fn row_count(&self) -> usize {
+        self.ids.len()
+    }
+
+    /// Number of requested property columns in the batch.
+    pub fn column_count(&self) -> usize {
+        self.column_count
+    }
+
+    /// GraphAr-internal vertex ID for `row`.
+    pub fn id(&self, row: usize) -> Option<i64> {
+        self.ids.get(row).copied()
+    }
+
+    /// UTF-8 property at `(row, column)`, or `None` for null/out-of-bounds.
+    pub fn value(&self, row: usize, column: usize) -> Option<&str> {
+        let index = flat_index(row, column, self.column_count)?;
+        self.valid
+            .get(index)
+            .copied()
+            .unwrap_or(false)
+            .then(|| self.values.get(index).map(String::as_str))
+            .flatten()
+    }
+
+    fn into_records(self) -> Vec<VertexStringRecord> {
+        let mut values = self
+            .values
+            .into_iter()
+            .zip(self.valid)
+            .map(|(value, valid)| valid.then_some(value));
+        self.ids
+            .into_iter()
+            .map(|id| VertexStringRecord {
+                id,
+                values: values.by_ref().take(self.column_count).collect(),
+            })
+            .collect()
+    }
+}
+
+/// Columnar edge strings transferred with one allocation per field vector.
+#[derive(Debug)]
+pub struct EdgeStringBatch {
+    sources: Vec<i64>,
+    destinations: Vec<i64>,
+    values: Vec<String>,
+    valid: Vec<bool>,
+    column_count: usize,
+    row_count: usize,
+}
+
+impl EdgeStringBatch {
+    /// Number of edge rows in the batch.
+    pub fn row_count(&self) -> usize {
+        self.row_count
+    }
+
+    /// Number of requested property columns in the batch.
+    pub fn column_count(&self) -> usize {
+        self.column_count
+    }
+
+    /// GraphAr-internal source vertex ID for `row`.
+    pub fn source(&self, row: usize) -> Option<i64> {
+        self.sources.get(row).copied()
+    }
+
+    /// GraphAr-internal destination vertex ID for `row`.
+    pub fn destination(&self, row: usize) -> Option<i64> {
+        self.destinations.get(row).copied()
+    }
+
+    /// UTF-8 property at `(row, column)`, or `None` for null/out-of-bounds.
+    pub fn value(&self, row: usize, column: usize) -> Option<&str> {
+        let index = flat_index(row, column, self.column_count)?;
+        self.valid
+            .get(index)
+            .copied()
+            .unwrap_or(false)
+            .then(|| self.values.get(index).map(String::as_str))
+            .flatten()
+    }
+
+    fn into_records(self) -> Vec<EdgeStringRecord> {
+        let mut values = self
+            .values
+            .into_iter()
+            .zip(self.valid)
+            .map(|(value, valid)| valid.then_some(value));
+        self.sources
+            .into_iter()
+            .zip(self.destinations)
+            .map(|(source, destination)| EdgeStringRecord {
+                source,
+                destination,
+                values: values.by_ref().take(self.column_count).collect(),
+            })
+            .collect()
+    }
+}
+
+fn flat_index(row: usize, column: usize, column_count: usize) -> Option<usize> {
+    (column < column_count)
+        .then(|| row.checked_mul(column_count)?.checked_add(column))
+        .flatten()
+}
+
 impl EdgeStringRecord {
     /// Return the GraphAr-internal source vertex ID.
     pub fn source(&self) -> i64 {
@@ -65,15 +185,6 @@ impl EdgeStringRecord {
     }
 }
 
-fn decode_values(values: Vec<String>, valid: Vec<bool>) -> Vec<Option<String>> {
-    debug_assert_eq!(values.len(), valid.len());
-    values
-        .into_iter()
-        .zip(valid)
-        .map(|(value, valid)| valid.then_some(value))
-        .collect()
-}
-
 /// Read UTF-8 properties for all vertices of `vertex_type`.
 ///
 /// `max_rows` is checked by the native collection before allocating result
@@ -85,17 +196,28 @@ pub fn read_vertex_strings<S: AsRef<str>>(
     properties: &[String],
     max_rows: usize,
 ) -> crate::Result<Vec<VertexStringRecord>> {
+    read_vertex_string_batch(graph_info, vertex_type, properties, max_rows)
+        .map(VertexStringBatch::into_records)
+}
+
+/// Read vertex UTF-8 properties as one flattened row-major batch.
+///
+/// This preserves Arrow chunk order while avoiding one nested values vector
+/// allocation per vertex row.
+pub fn read_vertex_string_batch<S: AsRef<str>>(
+    graph_info: &GraphInfo,
+    vertex_type: S,
+    properties: &[String],
+    max_rows: usize,
+) -> crate::Result<VertexStringBatch> {
     let_cxx_string!(vertex_type = vertex_type.as_ref());
     let properties = properties.to_vec();
-    ffi::graphar::read_vertex_string_records(&graph_info.0, &vertex_type, &properties, max_rows)
-        .map(|records| {
-            records
-                .into_iter()
-                .map(|record| VertexStringRecord {
-                    id: record.id,
-                    values: decode_values(record.values, record.valid),
-                })
-                .collect()
+    ffi::graphar::read_vertex_string_batch(&graph_info.0, &vertex_type, &properties, max_rows)
+        .map(|batch| VertexStringBatch {
+            ids: batch.ids,
+            values: batch.values,
+            valid: batch.valid,
+            column_count: batch.column_count,
         })
         .map_err(Into::into)
 }
@@ -120,11 +242,36 @@ where
     S2: AsRef<str>,
     S3: AsRef<str>,
 {
+    read_edge_string_batch(
+        graph_info, src_type, edge_type, dst_type, adjacency, properties, max_rows,
+    )
+    .map(EdgeStringBatch::into_records)
+}
+
+/// Read edge endpoints and UTF-8 properties as one flattened row-major batch.
+///
+/// This preserves Arrow chunk order while avoiding one nested values vector
+/// allocation per edge row.
+#[allow(clippy::too_many_arguments)]
+pub fn read_edge_string_batch<S1, S2, S3>(
+    graph_info: &GraphInfo,
+    src_type: S1,
+    edge_type: S2,
+    dst_type: S3,
+    adjacency: AdjListType,
+    properties: &[String],
+    max_rows: usize,
+) -> crate::Result<EdgeStringBatch>
+where
+    S1: AsRef<str>,
+    S2: AsRef<str>,
+    S3: AsRef<str>,
+{
     let_cxx_string!(src_type = src_type.as_ref());
     let_cxx_string!(edge_type = edge_type.as_ref());
     let_cxx_string!(dst_type = dst_type.as_ref());
     let properties = properties.to_vec();
-    ffi::graphar::read_edge_string_records(
+    ffi::graphar::read_edge_string_batch(
         &graph_info.0,
         &src_type,
         &edge_type,
@@ -133,38 +280,106 @@ where
         &properties,
         max_rows,
     )
-    .map(|records| {
-        records
-            .into_iter()
-            .map(|record| EdgeStringRecord {
-                source: record.source,
-                destination: record.destination,
-                values: decode_values(record.values, record.valid),
-            })
-            .collect()
+    .map(|batch| EdgeStringBatch {
+        sources: batch.sources,
+        destinations: batch.destinations,
+        values: batch.values,
+        valid: batch.valid,
+        column_count: batch.column_count,
+        row_count: batch.row_count,
     })
     .map_err(Into::into)
 }
 
+/// Scan the same upstream Arrow chunks as [`read_edge_string_batch`] without
+/// materializing endpoint or UTF-8 values across the Rust bridge.
+///
+/// This is the native GraphAr reference path for measuring bridge overhead on
+/// an identical graph, adjacency representation, and property projection.
+#[allow(clippy::too_many_arguments)]
+pub fn scan_edge_arrow_chunks<S1, S2, S3>(
+    graph_info: &GraphInfo,
+    src_type: S1,
+    edge_type: S2,
+    dst_type: S3,
+    adjacency: AdjListType,
+    properties: &[String],
+    max_rows: usize,
+) -> crate::Result<usize>
+where
+    S1: AsRef<str>,
+    S2: AsRef<str>,
+    S3: AsRef<str>,
+{
+    let_cxx_string!(src_type = src_type.as_ref());
+    let_cxx_string!(edge_type = edge_type.as_ref());
+    let_cxx_string!(dst_type = dst_type.as_ref());
+    let properties = properties.to_vec();
+    ffi::graphar::scan_edge_arrow_chunks(
+        &graph_info.0,
+        &src_type,
+        &edge_type,
+        &dst_type,
+        adjacency,
+        &properties,
+        max_rows,
+    )
+    .map_err(Into::into)
+}
+
+/// Export the selected upstream edge Arrow chunks through the Arrow C Stream
+/// Interface without copying their buffers.
+///
+/// The resulting Rust reader owns the exported C stream and releases the
+/// native Arrow buffers after the last record batch is dropped.
+#[allow(clippy::too_many_arguments)]
+pub fn read_edge_arrow_batches<S1, S2, S3>(
+    graph_info: &GraphInfo,
+    src_type: S1,
+    edge_type: S2,
+    dst_type: S3,
+    adjacency: AdjListType,
+    properties: &[String],
+    max_rows: usize,
+) -> crate::Result<ArrowArrayStreamReader>
+where
+    S1: AsRef<str>,
+    S2: AsRef<str>,
+    S3: AsRef<str>,
+{
+    let_cxx_string!(src_type = src_type.as_ref());
+    let_cxx_string!(edge_type = edge_type.as_ref());
+    let_cxx_string!(dst_type = dst_type.as_ref());
+    let properties = properties.to_vec();
+    let mut stream = FFI_ArrowArrayStream::empty();
+    let stream_address = std::ptr::addr_of_mut!(stream) as usize;
+    ffi::graphar::export_edge_arrow_stream(
+        &graph_info.0,
+        &src_type,
+        &edge_type,
+        &dst_type,
+        adjacency,
+        &properties,
+        max_rows,
+        stream_address,
+    )?;
+    ArrowArrayStreamReader::try_new(stream).map_err(|error| crate::Error::InvalidArgument {
+        name: "arrow_stream",
+        reason: error.to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{decode_values, read_edge_strings, read_vertex_strings};
+    use super::{
+        read_edge_arrow_batches, read_edge_string_batch, read_edge_strings,
+        read_vertex_string_batch, read_vertex_strings, scan_edge_arrow_chunks,
+    };
     use crate::builder::{Edge, EdgesBuilder, Vertex, VerticesBuilder};
     use crate::info::{AdjListType, AdjacentList, EdgeInfo, GraphInfo, VertexInfo};
     use crate::property::{Property, PropertyGroup, PropertyGroupVector, PropertyVec};
     use crate::types::{Cardinality, DataType, FileType};
     use tempfile::tempdir;
-
-    #[test]
-    fn nullable_values_preserve_property_order() {
-        assert_eq!(
-            decode_values(
-                vec!["first".to_string(), String::new(), "third".to_string()],
-                vec![true, false, true],
-            ),
-            vec![Some("first".to_string()), None, Some("third".to_string())]
-        );
-    }
 
     fn string_properties() -> PropertyGroupVector {
         let mut key = PropertyVec::new();
@@ -242,6 +457,14 @@ mod tests {
         edges.dump().unwrap();
 
         let properties = vec!["key".to_string(), "note".to_string()];
+        let vertex_batch = read_vertex_string_batch(&graph_info, "entity", &properties, 3).unwrap();
+        assert_eq!(vertex_batch.row_count(), 3);
+        assert_eq!(vertex_batch.column_count(), 2);
+        assert_eq!(vertex_batch.id(2), Some(2));
+        assert_eq!(vertex_batch.value(0, 1), Some("present"));
+        assert_eq!(vertex_batch.value(1, 1), None);
+        assert_eq!(vertex_batch.value(2, 1), Some(""));
+
         let read_vertices = read_vertex_strings(&graph_info, "entity", &properties, 3).unwrap();
         assert_eq!(read_vertices.len(), 3);
         assert_eq!(read_vertices[0].id(), 0);
@@ -257,6 +480,55 @@ mod tests {
             read_vertices[2].values(),
             &[Some("entity-2".to_string()), Some(String::new())]
         );
+
+        let edge_batch = read_edge_string_batch(
+            &graph_info,
+            "entity",
+            "relates",
+            "entity",
+            AdjListType::UnorderedBySource,
+            &properties,
+            1,
+        )
+        .unwrap();
+        assert_eq!(edge_batch.row_count(), 1);
+        assert_eq!(edge_batch.column_count(), 2);
+        assert_eq!(edge_batch.source(0), Some(0));
+        assert_eq!(edge_batch.destination(0), Some(1));
+        assert_eq!(edge_batch.value(0, 0), Some("edge-0"));
+        assert_eq!(
+            scan_edge_arrow_chunks(
+                &graph_info,
+                "entity",
+                "relates",
+                "entity",
+                AdjListType::UnorderedBySource,
+                &properties,
+                1,
+            )
+            .unwrap(),
+            1
+        );
+        let arrow_batches = read_edge_arrow_batches(
+            &graph_info,
+            "entity",
+            "relates",
+            "entity",
+            AdjListType::UnorderedBySource,
+            &properties,
+            1,
+        )
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+        assert_eq!(
+            arrow_batches
+                .iter()
+                .map(|batch| batch.num_rows())
+                .sum::<usize>(),
+            1
+        );
+        assert_eq!(arrow_batches[0].num_columns(), 4);
 
         let read_edges = read_edge_strings(
             &graph_info,

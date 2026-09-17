@@ -19,6 +19,8 @@
 
 #include "graphar-rs/src/ffi.rs.h"
 
+#include "arrow/c/bridge.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <optional>
@@ -232,6 +234,20 @@ void status_or_throw(const graphar::Status& status) {
   }
 }
 
+template <typename T>
+T arrow_value_or_throw(arrow::Result<T> result) {
+  if (!result.ok()) {
+    throw std::runtime_error(result.status().ToString());
+  }
+  return std::move(result).ValueUnsafe();
+}
+
+void arrow_status_or_throw(const arrow::Status& status) {
+  if (!status.ok()) {
+    throw std::runtime_error(status.ToString());
+  }
+}
+
 std::pair<std::shared_ptr<arrow::Array>, int64_t> locate_array_value(
     const std::shared_ptr<arrow::ChunkedArray>& column, int64_t row) {
   for (const auto& chunk : column->chunks()) {
@@ -294,7 +310,7 @@ std::vector<std::shared_ptr<arrow::ChunkedArray>> select_columns(
 }
 }  // namespace
 
-rust::Vec<graphar::VertexStringRecord> read_vertex_string_records(
+graphar::VertexStringBatch read_vertex_string_batch(
     const std::shared_ptr<graphar::GraphInfo>& graph_info,
     const std::string& type, const rust::Vec<rust::String>& properties,
     size_t max_rows) {
@@ -330,8 +346,11 @@ rust::Vec<graphar::VertexStringRecord> read_vertex_string_records(
               : graphar::GetChunkVersion::V1);
     }
   }
-  rust::Vec<graphar::VertexStringRecord> records;
-  records.reserve(collection->size());
+  graphar::VertexStringBatch batch;
+  batch.column_count = names.size();
+  batch.ids.reserve(collection->size());
+  batch.values.reserve(collection->size() * names.size());
+  batch.valid.reserve(collection->size() * names.size());
   const auto vertex_count = static_cast<int64_t>(collection->size());
   const auto chunk_size = vertex_info->GetChunkSize();
   for (int64_t chunk_start = 0; chunk_start < vertex_count;
@@ -346,22 +365,19 @@ rust::Vec<graphar::VertexStringRecord> read_vertex_string_records(
     const auto columns = select_columns(tables, names);
     const auto rows = std::min(chunk_size, vertex_count - chunk_start);
     for (int64_t row = 0; row < rows; ++row) {
-      graphar::VertexStringRecord record;
-      record.id = chunk_start + row;
-      record.values.reserve(names.size());
-      record.valid.reserve(names.size());
+      batch.ids.push_back(chunk_start + row);
       for (const auto& column : columns) {
         bool valid = false;
-        record.values.push_back(read_string_value(column, row, valid));
-        record.valid.push_back(valid);
+        batch.values.push_back(read_string_value(column, row, valid));
+        batch.valid.push_back(valid);
       }
-      records.push_back(std::move(record));
     }
   }
-  return records;
+  return batch;
 }
 
-rust::Vec<graphar::EdgeStringRecord> read_edge_string_records(
+namespace {
+std::shared_ptr<arrow::Table> read_edge_arrow_table(
     const std::shared_ptr<graphar::GraphInfo>& graph_info,
     const std::string& src_type, const std::string& edge_type,
     const std::string& dst_type, graphar::AdjListType adjacency,
@@ -394,9 +410,9 @@ rust::Vec<graphar::EdgeStringRecord> read_edge_string_records(
                                     graph_info->GetPrefix());
     }
   }
-  rust::Vec<graphar::EdgeStringRecord> records;
-  records.reserve(collection->size());
-  while (records.size() < collection->size()) {
+  std::vector<std::shared_ptr<arrow::Table>> chunk_tables;
+  size_t rows_read = 0;
+  while (rows_read < collection->size()) {
     auto adjacency_table = value_or_throw(adjacency_reader.GetChunk());
     if (adjacency_table == nullptr) {
       status_or_throw(adjacency_reader.next_chunk());
@@ -413,27 +429,94 @@ rust::Vec<graphar::EdgeStringRecord> read_edge_string_records(
     const auto columns = select_columns(property_tables, names);
     const auto sources = adjacency_table->column(0);
     const auto destinations = adjacency_table->column(1);
-    for (int64_t row = 0; row < adjacency_table->num_rows(); ++row) {
-      graphar::EdgeStringRecord record;
-      record.source = read_int64_value(sources, row);
-      record.destination = read_int64_value(destinations, row);
-      record.values.reserve(names.size());
-      record.valid.reserve(names.size());
-      for (const auto& column : columns) {
-        bool valid = false;
-        record.values.push_back(read_string_value(column, row, valid));
-        record.valid.push_back(valid);
-      }
-      records.push_back(std::move(record));
+    std::vector<std::shared_ptr<arrow::Field>> fields{
+        arrow::field("__source", sources->type(), false),
+        arrow::field("__destination", destinations->type(), false)};
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> combined_columns{
+        sources, destinations};
+    fields.reserve(2 + names.size());
+    combined_columns.reserve(2 + names.size());
+    for (size_t index = 0; index < names.size(); ++index) {
+      fields.push_back(arrow::field(names[index], columns[index]->type(), true));
+      combined_columns.push_back(columns[index]);
     }
-    if (records.size() < collection->size()) {
+    chunk_tables.push_back(arrow::Table::Make(
+        arrow::schema(std::move(fields)), std::move(combined_columns)));
+    rows_read += static_cast<size_t>(adjacency_table->num_rows());
+    if (rows_read < collection->size()) {
       status_or_throw(adjacency_reader.next_chunk());
       for (auto& reader : property_readers) {
         status_or_throw(reader.next_chunk());
       }
     }
   }
-  return records;
+  if (chunk_tables.empty()) {
+    throw std::runtime_error(
+        "Arrow edge scan cannot export an empty collection yet");
+  }
+  return arrow_value_or_throw(arrow::ConcatenateTables(chunk_tables));
+}
+
+graphar::EdgeStringBatch materialize_edge_string_batch(
+    const std::shared_ptr<arrow::Table>& table, size_t property_count) {
+  graphar::EdgeStringBatch batch;
+  batch.column_count = property_count;
+  batch.row_count = static_cast<size_t>(table->num_rows());
+  batch.sources.reserve(batch.row_count);
+  batch.destinations.reserve(batch.row_count);
+  batch.values.reserve(batch.row_count * property_count);
+  batch.valid.reserve(batch.row_count * property_count);
+  const auto sources = table->column(0);
+  const auto destinations = table->column(1);
+  for (int64_t row = 0; row < table->num_rows(); ++row) {
+    batch.sources.push_back(read_int64_value(sources, row));
+    batch.destinations.push_back(read_int64_value(destinations, row));
+    for (size_t column_index = 0; column_index < property_count;
+         ++column_index) {
+      bool valid = false;
+      batch.values.push_back(
+          read_string_value(table->column(column_index + 2), row, valid));
+      batch.valid.push_back(valid);
+    }
+  }
+  return batch;
+}
+}  // namespace
+
+graphar::EdgeStringBatch read_edge_string_batch(
+    const std::shared_ptr<graphar::GraphInfo>& graph_info,
+    const std::string& src_type, const std::string& edge_type,
+    const std::string& dst_type, graphar::AdjListType adjacency,
+    const rust::Vec<rust::String>& properties, size_t max_rows) {
+  return materialize_edge_string_batch(
+      read_edge_arrow_table(graph_info, src_type, edge_type, dst_type, adjacency,
+                            properties, max_rows),
+      properties.size());
+}
+
+size_t scan_edge_arrow_chunks(
+    const std::shared_ptr<graphar::GraphInfo>& graph_info,
+    const std::string& src_type, const std::string& edge_type,
+    const std::string& dst_type, graphar::AdjListType adjacency,
+    const rust::Vec<rust::String>& properties, size_t max_rows) {
+  return static_cast<size_t>(
+      read_edge_arrow_table(graph_info, src_type, edge_type, dst_type, adjacency,
+                            properties, max_rows)
+          ->num_rows());
+}
+
+void export_edge_arrow_stream(
+    const std::shared_ptr<graphar::GraphInfo>& graph_info,
+    const std::string& src_type, const std::string& edge_type,
+    const std::string& dst_type, graphar::AdjListType adjacency,
+    const rust::Vec<rust::String>& properties, size_t max_rows,
+    size_t stream_address) {
+  auto table = read_edge_arrow_table(graph_info, src_type, edge_type, dst_type,
+                                     adjacency, properties, max_rows);
+  auto reader = std::make_shared<arrow::TableBatchReader>(std::move(table));
+  auto* stream = reinterpret_cast<ArrowArrayStream*>(stream_address);
+  arrow_status_or_throw(
+      arrow::ExportRecordBatchReader(std::move(reader), stream));
 }
 
 static graphar::MaybeIndex optional_to_maybe_index(std::optional<size_t> opt) {

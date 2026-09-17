@@ -55,6 +55,10 @@ unsafe impl ExternType for SharedAdjacentList {
     type Kind = cxx::kind::Opaque;
 }
 
+// The CXX bridge mirrors upstream reader signatures; the Arrow C Stream output
+// pointer is the one additional ABI argument and cannot be represented as a
+// Rust return type across this boundary.
+#[allow(clippy::too_many_arguments)]
 #[cxx::bridge(namespace = "graphar")]
 pub(crate) mod graphar {
     extern "C++" {
@@ -373,17 +377,20 @@ pub(crate) mod graphar {
         index: usize,
     }
 
-    struct VertexStringRecord {
-        id: i64,
+    struct VertexStringBatch {
+        ids: Vec<i64>,
         values: Vec<String>,
         valid: Vec<bool>,
+        column_count: usize,
     }
 
-    struct EdgeStringRecord {
-        source: i64,
-        destination: i64,
+    struct EdgeStringBatch {
+        sources: Vec<i64>,
+        destinations: Vec<i64>,
         values: Vec<String>,
         valid: Vec<bool>,
+        column_count: usize,
+        row_count: usize,
     }
 
     // `GraphInfo`
@@ -431,14 +438,14 @@ pub(crate) mod graphar {
             dst_type: &CxxString,
         ) -> MaybeIndex;
         #[namespace = "graphar_rs"]
-        fn read_vertex_string_records(
+        fn read_vertex_string_batch(
             graph_info: &SharedPtr<GraphInfo>,
             type_: &CxxString,
             properties: &Vec<String>,
             max_rows: usize,
-        ) -> Result<Vec<VertexStringRecord>>;
+        ) -> Result<VertexStringBatch>;
         #[namespace = "graphar_rs"]
-        fn read_edge_string_records(
+        fn read_edge_string_batch(
             graph_info: &SharedPtr<GraphInfo>,
             src_type: &CxxString,
             edge_type: &CxxString,
@@ -446,7 +453,28 @@ pub(crate) mod graphar {
             adjacency: AdjListType,
             properties: &Vec<String>,
             max_rows: usize,
-        ) -> Result<Vec<EdgeStringRecord>>;
+        ) -> Result<EdgeStringBatch>;
+        #[namespace = "graphar_rs"]
+        fn scan_edge_arrow_chunks(
+            graph_info: &SharedPtr<GraphInfo>,
+            src_type: &CxxString,
+            edge_type: &CxxString,
+            dst_type: &CxxString,
+            adjacency: AdjListType,
+            properties: &Vec<String>,
+            max_rows: usize,
+        ) -> Result<usize>;
+        #[namespace = "graphar_rs"]
+        fn export_edge_arrow_stream(
+            graph_info: &SharedPtr<GraphInfo>,
+            src_type: &CxxString,
+            edge_type: &CxxString,
+            dst_type: &CxxString,
+            adjacency: AdjListType,
+            properties: &Vec<String>,
+            max_rows: usize,
+            stream_address: usize,
+        ) -> Result<()>;
     }
 
     unsafe extern "C++" {
