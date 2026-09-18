@@ -932,18 +932,18 @@ class EdgesCollection {
     edge_num_ = 0;
     for (IdType i = 0; i < vertex_chunk_num; ++i) {
       GAR_ASSIGN_OR_RAISE_ERROR(
-          edge_chunk_nums[i],
-          util::GetEdgeChunkNum(prefix, edge_info, adj_list_type_, i));
+          auto chunk_edge_num,
+          util::GetEdgeNum(prefix, edge_info, adj_list_type_, i));
+      edge_chunk_nums[i] =
+          (chunk_edge_num + edge_info_->GetChunkSize() - 1) /
+          edge_info_->GetChunkSize();
       if (i < vertex_chunk_begin) {
         chunk_begin_ += edge_chunk_nums[i];
         chunk_end_ += edge_chunk_nums[i];
       }
       if (i >= vertex_chunk_begin && i < vertex_chunk_end) {
         chunk_end_ += edge_chunk_nums[i];
-        GAR_ASSIGN_OR_RAISE_ERROR(
-            auto chunk_edge_num_,
-            util::GetEdgeNum(prefix, edge_info, adj_list_type_, i));
-        edge_num_ += chunk_edge_num_;
+        edge_num_ += chunk_edge_num;
       }
     }
     index_converter_ =
