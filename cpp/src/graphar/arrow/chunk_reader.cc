@@ -315,7 +315,8 @@ VertexPropertyArrowChunkReader::GetChunkV1() {
                                temp_filter_options));
     }
     // TODO(acezen): filter pushdown doesn't support cast schema now
-    if (schema_ != nullptr && filter_options_.filter == nullptr) {
+    if (schema_ != nullptr && filter_options_.filter == nullptr &&
+        !filter_options_.preserve_physical_types) {
       GAR_RETURN_NOT_OK(
           CastTableWithSchema(chunk_table_, schema_, &chunk_table_));
     }

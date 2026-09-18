@@ -194,8 +194,11 @@ Result<std::shared_ptr<arrow::Table>> FileSystem::ReadFileToTable(
 
   GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(auto scanner, scan_builder->Finish());
   GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(auto table, scanner->ToTable());
-  // cast string array to large string array as we need concatenate chunks in
-  // some places, e.g., in vineyard
+  if (options.preserve_physical_types) {
+    return table;
+  }
+  // Cast string arrays to large string arrays where consumers require stable
+  // large-offset schemas, for example when concatenating chunks in vineyard.
   for (int i = 0; i < table->num_columns(); ++i) {
     std::shared_ptr<arrow::DataType> type = table->column(i)->type();
     if (type->id() == arrow::Type::STRING) {

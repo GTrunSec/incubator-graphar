@@ -392,6 +392,7 @@ std::shared_ptr<arrow::Table> read_edge_arrow_table(
     const std::string& src_type, const std::string& edge_type,
     const std::string& dst_type, graphar::AdjListType adjacency,
     const rust::Vec<rust::String>& properties, size_t max_rows,
+    bool preserve_physical_types = false,
     graphar::EdgeArrowReadTimings* timings = nullptr) {
   const auto native_read_started = SteadyClock::now();
   if (timings != nullptr) {
@@ -419,6 +420,8 @@ std::shared_ptr<arrow::Table> read_edge_arrow_table(
       edge_info, adjacency, graph_info->GetPrefix());
   std::vector<graphar::AdjListPropertyArrowChunkReader> property_readers;
   property_readers.reserve(edge_info->GetPropertyGroups().size());
+  graphar::util::FilterOptions property_options;
+  property_options.preserve_physical_types = preserve_physical_types;
   for (const auto& property_group : edge_info->GetPropertyGroups()) {
     if (std::any_of(property_group->GetProperties().begin(),
                     property_group->GetProperties().end(),
@@ -427,7 +430,7 @@ std::shared_ptr<arrow::Table> read_edge_arrow_table(
                                        property.name) != names.end();
                     })) {
       property_readers.emplace_back(edge_info, property_group, adjacency,
-                                    graph_info->GetPrefix());
+                                    graph_info->GetPrefix(), property_options);
     }
   }
   if (timings != nullptr) {
@@ -580,7 +583,8 @@ graphar::EdgeArrowReadTimings export_edge_arrow_stream_observed(
     size_t stream_address) {
   graphar::EdgeArrowReadTimings timings{};
   auto table = read_edge_arrow_table(graph_info, src_type, edge_type, dst_type,
-                                     adjacency, properties, max_rows, &timings);
+                                     adjacency, properties, max_rows, true,
+                                     &timings);
   auto reader = std::make_shared<arrow::TableBatchReader>(std::move(table));
   auto* stream = reinterpret_cast<ArrowArrayStream*>(stream_address);
   const auto stream_export_started = SteadyClock::now();

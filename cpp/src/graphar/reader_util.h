@@ -32,10 +32,15 @@ struct FilterOptions {
   Filter filter = nullptr;
   // The columns to include in the table. Select all columns by default.
   ColumnNames columns = std::nullopt;
+  // Preserve physical string/binary offset widths instead of widening them.
+  bool preserve_physical_types = false;
 
   FilterOptions() {}
-  FilterOptions(Filter filter, ColumnNames columns)
-      : filter(filter), columns(columns) {}
+  FilterOptions(Filter filter, ColumnNames columns,
+                bool preserve_physical_types = false)
+      : filter(filter),
+        columns(columns),
+        preserve_physical_types(preserve_physical_types) {}
 };
 
 Status CheckFilterOptions(
