@@ -39,6 +39,7 @@ namespace graphar {
 struct MaybeIndex;
 struct VertexStringBatch;
 struct EdgeStringBatch;
+struct EdgeArrowReadTimings;
 
 using SharedVertexInfo = std::shared_ptr<VertexInfo>;
 using SharedEdgeInfo = std::shared_ptr<EdgeInfo>;
@@ -151,6 +152,12 @@ size_t scan_edge_arrow_chunks(
     const std::string& dst_type, graphar::AdjListType adjacency,
     const rust::Vec<rust::String>& properties, size_t max_rows);
 void export_edge_arrow_stream(
+    const std::shared_ptr<graphar::GraphInfo>& graph_info,
+    const std::string& src_type, const std::string& edge_type,
+    const std::string& dst_type, graphar::AdjListType adjacency,
+    const rust::Vec<rust::String>& properties, size_t max_rows,
+    size_t stream_address);
+graphar::EdgeArrowReadTimings export_edge_arrow_stream_observed(
     const std::shared_ptr<graphar::GraphInfo>& graph_info,
     const std::string& src_type, const std::string& edge_type,
     const std::string& dst_type, graphar::AdjListType adjacency,

@@ -393,6 +393,19 @@ pub(crate) mod graphar {
         row_count: usize,
     }
 
+    struct EdgeArrowReadTimings {
+        collection_lookup_ns: u64,
+        reader_setup_ns: u64,
+        adjacency_read_ns: u64,
+        property_read_ns: u64,
+        column_projection_ns: u64,
+        table_assembly_ns: u64,
+        chunk_advance_ns: u64,
+        concatenate_ns: u64,
+        native_read_ns: u64,
+        stream_export_ns: u64,
+    }
+
     // `GraphInfo`
     unsafe extern "C++" {
         type GraphInfo;
@@ -475,6 +488,17 @@ pub(crate) mod graphar {
             max_rows: usize,
             stream_address: usize,
         ) -> Result<()>;
+        #[namespace = "graphar_rs"]
+        fn export_edge_arrow_stream_observed(
+            graph_info: &SharedPtr<GraphInfo>,
+            src_type: &CxxString,
+            edge_type: &CxxString,
+            dst_type: &CxxString,
+            adjacency: AdjListType,
+            properties: &Vec<String>,
+            max_rows: usize,
+            stream_address: usize,
+        ) -> Result<EdgeArrowReadTimings>;
     }
 
     unsafe extern "C++" {

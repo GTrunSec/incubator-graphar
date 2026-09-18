@@ -22,6 +22,7 @@
 #include "arrow/c/bridge.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <optional>
 #include <stdexcept>
@@ -377,14 +378,29 @@ graphar::VertexStringBatch read_vertex_string_batch(
 }
 
 namespace {
+using SteadyClock = std::chrono::steady_clock;
+
+uint64_t elapsed_ns(const SteadyClock::time_point& started) {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(SteadyClock::now() -
+                                                          started)
+          .count());
+}
+
 std::shared_ptr<arrow::Table> read_edge_arrow_table(
     const std::shared_ptr<graphar::GraphInfo>& graph_info,
     const std::string& src_type, const std::string& edge_type,
     const std::string& dst_type, graphar::AdjListType adjacency,
-    const rust::Vec<rust::String>& properties, size_t max_rows) {
+    const rust::Vec<rust::String>& properties, size_t max_rows,
+    graphar::EdgeArrowReadTimings* timings = nullptr) {
+  const auto native_read_started = SteadyClock::now();
+  if (timings != nullptr) {
+    *timings = graphar::EdgeArrowReadTimings{};
+  }
   if (graph_info == nullptr) {
     throw std::runtime_error("EdgesCollection: graph_info must not be null");
   }
+  const auto collection_started = SteadyClock::now();
   auto collection_result = graphar::EdgesCollection::Make(
       graph_info, src_type, edge_type, dst_type, adjacency);
   if (!collection_result) {
@@ -392,7 +408,11 @@ std::shared_ptr<arrow::Table> read_edge_arrow_table(
   }
   auto collection = std::move(collection_result).value();
   enforce_row_budget(collection->size(), max_rows, "EdgesCollection");
+  if (timings != nullptr) {
+    timings->collection_lookup_ns = elapsed_ns(collection_started);
+  }
 
+  const auto reader_setup_started = SteadyClock::now();
   const auto names = to_std_strings(properties);
   auto edge_info = graph_info->GetEdgeInfo(src_type, edge_type, dst_type);
   graphar::AdjListArrowChunkReader adjacency_reader(
@@ -410,23 +430,43 @@ std::shared_ptr<arrow::Table> read_edge_arrow_table(
                                     graph_info->GetPrefix());
     }
   }
+  if (timings != nullptr) {
+    timings->reader_setup_ns = elapsed_ns(reader_setup_started);
+  }
   std::vector<std::shared_ptr<arrow::Table>> chunk_tables;
   size_t rows_read = 0;
   while (rows_read < collection->size()) {
+    const auto adjacency_read_started = SteadyClock::now();
     auto adjacency_table = value_or_throw(adjacency_reader.GetChunk());
+    if (timings != nullptr) {
+      timings->adjacency_read_ns += elapsed_ns(adjacency_read_started);
+    }
     if (adjacency_table == nullptr) {
+      const auto chunk_advance_started = SteadyClock::now();
       status_or_throw(adjacency_reader.next_chunk());
       for (auto& reader : property_readers) {
         status_or_throw(reader.next_chunk());
       }
+      if (timings != nullptr) {
+        timings->chunk_advance_ns += elapsed_ns(chunk_advance_started);
+      }
       continue;
     }
+    const auto property_read_started = SteadyClock::now();
     std::vector<std::shared_ptr<arrow::Table>> property_tables;
     property_tables.reserve(property_readers.size());
     for (auto& reader : property_readers) {
       property_tables.push_back(value_or_throw(reader.GetChunk()));
     }
+    if (timings != nullptr) {
+      timings->property_read_ns += elapsed_ns(property_read_started);
+    }
+    const auto column_projection_started = SteadyClock::now();
     const auto columns = select_columns(property_tables, names);
+    if (timings != nullptr) {
+      timings->column_projection_ns += elapsed_ns(column_projection_started);
+    }
+    const auto table_assembly_started = SteadyClock::now();
     const auto sources = adjacency_table->column(0);
     const auto destinations = adjacency_table->column(1);
     std::vector<std::shared_ptr<arrow::Field>> fields{
@@ -442,11 +482,18 @@ std::shared_ptr<arrow::Table> read_edge_arrow_table(
     }
     chunk_tables.push_back(arrow::Table::Make(
         arrow::schema(std::move(fields)), std::move(combined_columns)));
+    if (timings != nullptr) {
+      timings->table_assembly_ns += elapsed_ns(table_assembly_started);
+    }
     rows_read += static_cast<size_t>(adjacency_table->num_rows());
     if (rows_read < collection->size()) {
+      const auto chunk_advance_started = SteadyClock::now();
       status_or_throw(adjacency_reader.next_chunk());
       for (auto& reader : property_readers) {
         status_or_throw(reader.next_chunk());
+      }
+      if (timings != nullptr) {
+        timings->chunk_advance_ns += elapsed_ns(chunk_advance_started);
       }
     }
   }
@@ -454,7 +501,13 @@ std::shared_ptr<arrow::Table> read_edge_arrow_table(
     throw std::runtime_error(
         "Arrow edge scan cannot export an empty collection yet");
   }
-  return arrow_value_or_throw(arrow::ConcatenateTables(chunk_tables));
+  const auto concatenate_started = SteadyClock::now();
+  auto table = arrow_value_or_throw(arrow::ConcatenateTables(chunk_tables));
+  if (timings != nullptr) {
+    timings->concatenate_ns = elapsed_ns(concatenate_started);
+    timings->native_read_ns = elapsed_ns(native_read_started);
+  }
+  return table;
 }
 
 graphar::EdgeStringBatch materialize_edge_string_batch(
@@ -517,6 +570,24 @@ void export_edge_arrow_stream(
   auto* stream = reinterpret_cast<ArrowArrayStream*>(stream_address);
   arrow_status_or_throw(
       arrow::ExportRecordBatchReader(std::move(reader), stream));
+}
+
+graphar::EdgeArrowReadTimings export_edge_arrow_stream_observed(
+    const std::shared_ptr<graphar::GraphInfo>& graph_info,
+    const std::string& src_type, const std::string& edge_type,
+    const std::string& dst_type, graphar::AdjListType adjacency,
+    const rust::Vec<rust::String>& properties, size_t max_rows,
+    size_t stream_address) {
+  graphar::EdgeArrowReadTimings timings{};
+  auto table = read_edge_arrow_table(graph_info, src_type, edge_type, dst_type,
+                                     adjacency, properties, max_rows, &timings);
+  auto reader = std::make_shared<arrow::TableBatchReader>(std::move(table));
+  auto* stream = reinterpret_cast<ArrowArrayStream*>(stream_address);
+  const auto stream_export_started = SteadyClock::now();
+  arrow_status_or_throw(
+      arrow::ExportRecordBatchReader(std::move(reader), stream));
+  timings.stream_export_ns = elapsed_ns(stream_export_started);
+  return timings;
 }
 
 static graphar::MaybeIndex optional_to_maybe_index(std::optional<size_t> opt) {

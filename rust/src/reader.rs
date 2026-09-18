@@ -17,6 +17,8 @@
 
 //! Bounded high-level readers backed by GraphAr collections.
 
+use std::time::Duration;
+
 use arrow_array::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
 use cxx::let_cxx_string;
 
@@ -110,6 +112,48 @@ pub struct EdgeStringBatch {
     valid: Vec<bool>,
     column_count: usize,
     row_count: usize,
+}
+
+/// Native phase timings for an observed Arrow edge read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EdgeArrowReadTimings {
+    /// Collection lookup and row-budget validation.
+    pub collection_lookup: Duration,
+    /// Native reader and property projection setup.
+    pub reader_setup: Duration,
+    /// Adjacency chunk reads.
+    pub adjacency_read: Duration,
+    /// Property chunk reads.
+    pub property_read: Duration,
+    /// Property-column lookup in the returned Arrow tables.
+    pub column_projection: Duration,
+    /// Assembly of projected per-chunk Arrow tables.
+    pub table_assembly: Duration,
+    /// Movement between native GraphAr chunks.
+    pub chunk_advance: Duration,
+    /// Final Arrow table concatenation.
+    pub concatenate: Duration,
+    /// Complete native read, including unclassified orchestration overhead.
+    pub native_read: Duration,
+    /// Export of the assembled table through Arrow's C Stream interface.
+    pub stream_export: Duration,
+}
+
+impl From<ffi::graphar::EdgeArrowReadTimings> for EdgeArrowReadTimings {
+    fn from(value: ffi::graphar::EdgeArrowReadTimings) -> Self {
+        Self {
+            collection_lookup: Duration::from_nanos(value.collection_lookup_ns),
+            reader_setup: Duration::from_nanos(value.reader_setup_ns),
+            adjacency_read: Duration::from_nanos(value.adjacency_read_ns),
+            property_read: Duration::from_nanos(value.property_read_ns),
+            column_projection: Duration::from_nanos(value.column_projection_ns),
+            table_assembly: Duration::from_nanos(value.table_assembly_ns),
+            chunk_advance: Duration::from_nanos(value.chunk_advance_ns),
+            concatenate: Duration::from_nanos(value.concatenate_ns),
+            native_read: Duration::from_nanos(value.native_read_ns),
+            stream_export: Duration::from_nanos(value.stream_export_ns),
+        }
+    }
 }
 
 impl EdgeStringBatch {
@@ -369,11 +413,55 @@ where
     })
 }
 
+/// Export selected edge chunks and return native phase timings for the read.
+///
+/// The Arrow buffers remain zero-copy across the C Stream boundary. Timings
+/// classify native GraphAr and Arrow assembly work before Rust consumes the
+/// resulting stream.
+#[allow(clippy::too_many_arguments)]
+pub fn read_edge_arrow_batches_observed<S1, S2, S3>(
+    graph_info: &GraphInfo,
+    src_type: S1,
+    edge_type: S2,
+    dst_type: S3,
+    adjacency: AdjListType,
+    properties: &[String],
+    max_rows: usize,
+) -> crate::Result<(ArrowArrayStreamReader, EdgeArrowReadTimings)>
+where
+    S1: AsRef<str>,
+    S2: AsRef<str>,
+    S3: AsRef<str>,
+{
+    let_cxx_string!(src_type = src_type.as_ref());
+    let_cxx_string!(edge_type = edge_type.as_ref());
+    let_cxx_string!(dst_type = dst_type.as_ref());
+    let properties = properties.to_vec();
+    let mut stream = FFI_ArrowArrayStream::empty();
+    let stream_address = std::ptr::addr_of_mut!(stream) as usize;
+    let timings = ffi::graphar::export_edge_arrow_stream_observed(
+        &graph_info.0,
+        &src_type,
+        &edge_type,
+        &dst_type,
+        adjacency,
+        &properties,
+        max_rows,
+        stream_address,
+    )?;
+    let reader =
+        ArrowArrayStreamReader::try_new(stream).map_err(|error| crate::Error::InvalidArgument {
+            name: "arrow_stream",
+            reason: error.to_string(),
+        })?;
+    Ok((reader, timings.into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        read_edge_arrow_batches, read_edge_string_batch, read_edge_strings,
-        read_vertex_string_batch, read_vertex_strings, scan_edge_arrow_chunks,
+        read_edge_arrow_batches, read_edge_arrow_batches_observed, read_edge_string_batch,
+        read_edge_strings, read_vertex_string_batch, read_vertex_strings, scan_edge_arrow_chunks,
     };
     use crate::builder::{Edge, EdgesBuilder, Vertex, VerticesBuilder};
     use crate::info::{AdjListType, AdjacentList, EdgeInfo, GraphInfo, VertexInfo};
@@ -529,6 +617,34 @@ mod tests {
             1
         );
         assert_eq!(arrow_batches[0].num_columns(), 4);
+        let (observed_stream, timings) = read_edge_arrow_batches_observed(
+            &graph_info,
+            "entity",
+            "relates",
+            "entity",
+            AdjListType::UnorderedBySource,
+            &properties,
+            1,
+        )
+        .unwrap();
+        let observed_rows = observed_stream
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .iter()
+            .map(|batch| batch.num_rows())
+            .sum::<usize>();
+        assert_eq!(observed_rows, 1);
+        assert!(
+            timings.native_read
+                >= timings.collection_lookup
+                    + timings.reader_setup
+                    + timings.adjacency_read
+                    + timings.property_read
+                    + timings.column_projection
+                    + timings.table_assembly
+                    + timings.chunk_advance
+                    + timings.concatenate
+        );
 
         let read_edges = read_edge_strings(
             &graph_info,
