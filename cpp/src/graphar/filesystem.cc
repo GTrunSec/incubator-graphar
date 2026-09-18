@@ -176,39 +176,24 @@ Result<std::shared_ptr<arrow::Table>> FileSystem::ReadFileToTable(
     const std::string& path, FileType file_type,
     const util::FilterOptions& options) const noexcept {
   GAR_RETURN_NOT_OK(EnsureDatasetScannerInitialized());
-  std::shared_ptr<arrow::Table> table;
-  if (file_type == FileType::PARQUET && !options.filter && !options.columns) {
-    GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(auto input,
-                                         arrow_fs_->OpenInputFile(path));
-    parquet::arrow::FileReaderBuilder builder;
-    RETURN_NOT_ARROW_OK(builder.Open(std::move(input)));
-    builder.memory_pool(arrow::default_memory_pool());
-    GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(auto reader, builder.Build());
-#if defined(ARROW_VERSION) && ARROW_VERSION <= 20000000
-    RETURN_NOT_ARROW_OK(reader->ReadTable(&table));
-#else
-    GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(table, reader->ReadTable());
-#endif
-  } else {
-    std::shared_ptr<ds::FileFormat> format = GetFileFormat(file_type);
-    GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(
-        auto factory, arrow::dataset::FileSystemDatasetFactory::Make(
-                          arrow_fs_, {path}, format,
-                          arrow::dataset::FileSystemFactoryOptions()));
-    GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(auto dataset, factory->Finish());
-    GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(auto scan_builder, dataset->NewScan());
-    // Apply the row filter and select the specified columns
-    if (options.filter) {
-      GAR_ASSIGN_OR_RAISE(auto filter, options.filter->Evaluate());
-      RETURN_NOT_ARROW_OK(scan_builder->Filter(filter));
-    }
-    if (options.columns) {
-      RETURN_NOT_ARROW_OK(scan_builder->Project(*options.columns));
-    }
-
-    GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(auto scanner, scan_builder->Finish());
-    GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(table, scanner->ToTable());
+  std::shared_ptr<ds::FileFormat> format = GetFileFormat(file_type);
+  GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(
+      auto factory, arrow::dataset::FileSystemDatasetFactory::Make(
+                        arrow_fs_, {path}, format,
+                        arrow::dataset::FileSystemFactoryOptions()));
+  GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(auto dataset, factory->Finish());
+  GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(auto scan_builder, dataset->NewScan());
+  // Apply the row filter and select the specified columns
+  if (options.filter) {
+    GAR_ASSIGN_OR_RAISE(auto filter, options.filter->Evaluate());
+    RETURN_NOT_ARROW_OK(scan_builder->Filter(filter));
   }
+  if (options.columns) {
+    RETURN_NOT_ARROW_OK(scan_builder->Project(*options.columns));
+  }
+
+  GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(auto scanner, scan_builder->Finish());
+  GAR_RETURN_ON_ARROW_ERROR_AND_ASSIGN(auto table, scanner->ToTable());
   // cast string array to large string array as we need concatenate chunks in
   // some places, e.g., in vineyard
   for (int i = 0; i < table->num_columns(); ++i) {
