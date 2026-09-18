@@ -108,8 +108,23 @@ fn build_graphar() -> Vec<PathBuf> {
         .define("GRAPHAR_BUILD_STATIC", "ON")
         .define("GRAPHAR_ENABLE_SANITIZER", "OFF");
 
+    println!("cargo:rerun-if-env-changed=CMAKE_PREFIX_PATH");
+    let mut cmake_prefixes = env::var_os("CMAKE_PREFIX_PATH")
+        .map(|prefixes| env::split_paths(&prefixes).collect::<Vec<_>>())
+        .unwrap_or_default();
     if let Ok(prefix) = pkg_config::get_variable("arrow", "prefix") {
-        build.define("CMAKE_PREFIX_PATH", prefix);
+        let prefix = PathBuf::from(prefix);
+        if !cmake_prefixes.contains(&prefix) {
+            cmake_prefixes.push(prefix);
+        }
+    }
+    if !cmake_prefixes.is_empty() {
+        let cmake_prefix_path = cmake_prefixes
+            .iter()
+            .map(|prefix| prefix.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(";");
+        build.define("CMAKE_PREFIX_PATH", cmake_prefix_path);
     }
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
     let build_dir = build.build();
