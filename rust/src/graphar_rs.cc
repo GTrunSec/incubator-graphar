@@ -454,6 +454,9 @@ std::shared_ptr<arrow::Table> read_edge_arrow_table(
     throw std::runtime_error(
         "Arrow edge scan cannot export an empty collection yet");
   }
+  if (chunk_tables.size() == 1) {
+    return std::move(chunk_tables.front());
+  }
   return arrow_value_or_throw(arrow::ConcatenateTables(chunk_tables));
 }
 
